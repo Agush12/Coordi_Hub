@@ -1,0 +1,914 @@
+backend files-
+socketconfig-
+package com.project.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
+import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
+import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebsocketConfig implements WebSocketMessageBrokerConfigurer{
+
+
+
+        @Override
+        public void registerStompEndpoints(StompEndpointRegistry registry) {
+            registry.addEndpoint("/ws").setAllowedOriginPatterns("*");
+        }
+
+        @Override
+        public void configureMessageBroker(MessageBrokerRegistry registry) {
+            registry.setApplicationDestinationPrefixes("/app");
+            registry.enableSimpleBroker("/group","/user","chat");
+            registry.setUserDestinationPrefix("/user");
+        }
+
+
+}
+appconfig(if necessary)
+package com.project.config;
+
+import java.util.Arrays;
+import java.util.Collections;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+
+import jakarta.servlet.http.HttpServletRequest;
+
+@Configuration
+@EnableWebSecurity
+public class AppConfig {
+	
+	@Bean
+	SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception{
+		http.sessionManagement(Management -> Management.sessionCreationPolicy(
+				SessionCreationPolicy.STATELESS))
+		.authorizeHttpRequests(Authorize -> Authorize.requestMatchers("/api/admin/**").hasRole("ADMIN")
+				.requestMatchers("/api/**")
+				.authenticated()
+				.anyRequest().permitAll())
+		.addFilterBefore(new JwtTokenValidator(),BasicAuthenticationFilter.class)
+		.csrf(csrf -> csrf.disable())
+		.cors(cors -> cors.configurationSource(corsConfigurationSource()));
+		
+		return http.build();
+	}
+
+	private CorsConfigurationSource corsConfigurationSource() {
+
+		return new CorsConfigurationSource() {
+			
+			@Override
+			public CorsConfiguration getCorsConfiguration(
+					HttpServletRequest request) {
+				// TODO Auto-generated method stub
+				CorsConfiguration cfg = new CorsConfiguration();
+				
+				cfg.setAllowedOrigins(Arrays.asList(
+						"http://localhost:3000",
+						"http://localhost:5173",
+						"http://localhost:5174",
+						"http://localhost:5175",
+						"https://project-management-react-plum.vercel.app"));
+				cfg.setAllowedMethods(Collections.singletonList("*"));
+				cfg.setAllowCredentials(true);
+				cfg.setAllowedHeaders(Collections.singletonList("*"));
+				cfg.setExposedHeaders(Arrays.asList("Authorization"));
+				cfg.setMaxAge(3600L);
+				return cfg;
+			}
+		};
+	}
+	
+	@Bean
+	PasswordEncoder passwordEncoder() {
+		return new BCryptPasswordEncoder();
+	} 
+
+
+}
+
+realtimechatcontroller-
+package com.project.controller;
+
+import com.project.exception.ChatException;
+import com.project.exception.UserException;
+import com.project.model.Message;
+import com.project.service.ChatService;
+import com.project.service.MessageService;
+import com.project.service.UserService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class RealTimeChatController {
+    @Autowired
+    private SimpMessagingTemplate simpMessagingTemplate;
+
+
+    @MessageMapping("/chat/{groupId}")
+    public Message sendToUser(@Payload Message message,
+
+                              @DestinationVariable String groupId) throws UserException, ChatException {
+
+
+        simpMessagingTemplate.convertAndSendToUser(groupId, "/private",
+                message);
+
+
+
+        return message;
+    }
+
+
+
+}
+userController-
+package com.project.controller;
+
+import com.project.exception.ProjectException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.project.exception.UserException;
+import com.project.model.User;
+import com.project.service.UserService;
+
+@RestController
+public class UserController {
+	
+	
+	private UserService userService;
+
+	public UserController(UserService userService) {
+		this.userService = userService;
+	}
+
+	@GetMapping("/api/users/profile")
+	public ResponseEntity<User> getUserProfileHandler(
+			@RequestHeader("Authorization") String jwt) throws UserException, ProjectException {
+
+		User user = userService.findUserProfileByJwt(jwt);
+		user.setPassword(null);
+
+		return new ResponseEntity<>(user, HttpStatus.ACCEPTED);
+	}
+	
+	@GetMapping("/api/users/{userId}")
+	public ResponseEntity<User> findUserById(
+			@PathVariable Long userId,
+			@RequestHeader("Authorization") String jwt) throws UserException {
+
+		User user = userService.findUserById(userId);
+		user.setPassword(null);
+
+		return new ResponseEntity<>(user, HttpStatus.ACCEPTED);
+	}
+
+}
+projectController-
+package com.project.controller;
+import java.util.List;
+
+import com.project.exception.MailsException;
+import com.project.model.Invitation;
+import com.project.request.ProjectInvitationRequest;
+import com.project.service.InvitationService;
+import jakarta.mail.MessagingException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.project.exception.ChatException;
+import com.project.exception.ProjectException;
+import com.project.exception.UserException;
+import com.project.model.Chat;
+import com.project.model.Project;
+import com.project.model.User;
+import com.project.request.TokenValidationRequest;
+import com.project.response.MessageResponse;
+import com.project.service.EmailService;
+import com.project.service.ProjectService;
+import com.project.service.UserService;
+import com.project.util.TokenGenerator;
+
+@RestController
+@RequestMapping("/api/projects")
+public class ProjectController {
+
+    @Autowired
+    private ProjectService projectService;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private InvitationService invitationService;
+    
+
+    @GetMapping
+    public ResponseEntity<List<Project>> getProjects(
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String tag,
+            @RequestHeader("Authorization") String token) throws ProjectException, UserException {
+        User user = userService.findUserProfileByJwt(token);
+        List<Project> projects = projectService.getProjectsByTeam(user,category,tag);
+        return new ResponseEntity<>(projects, HttpStatus.OK);
+    }
+
+    @GetMapping("/{projectId}")
+    public ResponseEntity<Project> getProjectById(@PathVariable Long projectId) throws ProjectException {
+        Project project = projectService.getProjectById(projectId);
+        return project != null ?
+                new ResponseEntity<>(project, HttpStatus.OK) :
+                new ResponseEntity<>(HttpStatus.NOT_FOUND);
+    }
+
+    @PostMapping
+    public ResponseEntity<Project> createProject(
+            @RequestBody Project project,
+                                                 @RequestHeader("Authorization") String token) throws UserException, ProjectException {
+        User user = userService.findUserProfileByJwt(token);
+        project.setOwner(user);
+        Project createdProject = projectService.createProject(project, user.getId());
+        userService.updateUsersProjectSize(user,1);
+        return new ResponseEntity<>(createdProject, HttpStatus.CREATED);
+    }
+
+    @PutMapping("/{projectId}")
+    public ResponseEntity<Project> updateProject( @RequestBody Project updatedProject,@PathVariable Long projectId, @RequestHeader("Authorization") String token) throws UserException, ProjectException {
+        User user = userService.findUserProfileByJwt(token);
+        Project updated = projectService.updateProject(updatedProject,projectId);
+        return updated != null ?
+                new ResponseEntity<>(updated, HttpStatus.OK) :
+                new ResponseEntity<>(HttpStatus.NOT_FOUND);
+    }
+
+    @DeleteMapping("/{projectId}")
+    public ResponseEntity<MessageResponse> deleteProject(@PathVariable Long projectId, @RequestHeader("Authorization") String token) throws UserException, ProjectException {
+        User user = userService.findUserProfileByJwt(token);
+        
+        MessageResponse response =new MessageResponse(projectService.deleteProject(projectId, user.getId()));
+        userService.updateUsersProjectSize(user,-1);
+        return ResponseEntity.ok(response);
+    }
+
+//    @GetMapping("/user")
+//    public ResponseEntity<List<Project>> getProjectsByOwner(@RequestHeader("Authorization") String token) throws ProjectException {
+//        try {
+//            User owner = userService.findUserProfileByJwt(token);
+//            List<Project> projects = projectService.getProjectsByOwner(owner);
+//            return new ResponseEntity<>(projects, HttpStatus.OK);
+//        } catch (UserException e) {
+//            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+//        }
+//    }
+
+
+
+    @GetMapping("/search")
+    public ResponseEntity< List<Project>> searchProjects(
+            @RequestParam(required = false) String keyword,
+            @RequestHeader("Authorization") String jwt
+    ) throws ProjectException, UserException {
+        User user=userService.findUserProfileByJwt(jwt);
+            List<Project> projects = projectService.searchProjects(keyword,user);
+            return ResponseEntity.ok(projects);
+    }
+    
+    @PostMapping("/{userId}/add-to-project/{projectId}")
+    public ResponseEntity<MessageResponse> addUserToProject(
+            @PathVariable Long userId,
+            @PathVariable Long projectId) throws UserException, ProjectException {
+        projectService.addUserToProject(projectId, userId);
+        MessageResponse response =new MessageResponse("User added to the project successfully");
+        return ResponseEntity.ok(response);
+    }
+    
+    @GetMapping("/{projectId}/chat")
+    public ResponseEntity<Chat> getChatByProjectId(@PathVariable Long projectId)
+            throws ProjectException, ChatException {
+        Chat chat = projectService.getChatByProjectId(projectId);
+        return chat != null ? ResponseEntity.ok(chat) : ResponseEntity.notFound().build();
+    }
+    
+
+    
+    @PostMapping("/invite")
+    public ResponseEntity<MessageResponse> inviteToProject(
+            @RequestBody ProjectInvitationRequest req) throws MailsException, MessagingException {
+
+        invitationService.sendInvitation(req.getEmail(), req.getProjectId());
+
+            MessageResponse res=new MessageResponse();
+            res.setMessage("User invited to the project successfully");
+            return ResponseEntity.ok(res);
+
+    }
+
+    @GetMapping("/accept_invitation")
+    public ResponseEntity<Invitation> acceptInvitation(@RequestParam String token,
+                                   @RequestHeader("Authorization") String jwt) throws Exception {
+
+        User user=userService.findUserProfileByJwt(jwt);
+
+        Invitation invitation = invitationService.acceptInvitation(token,user.getId());
+        projectService.addUserToProject(invitation.getProjectId(),user.getId());
+
+        return new ResponseEntity<>(invitation,HttpStatus.ACCEPTED);
+    }
+
+    
+}
+
+
+
+
+entities-package com.project.model;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Entity
+@Table(name = "chats")
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class Chat {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+
+    @OneToOne
+    @JoinColumn(name = "project_id")
+    private Project project;
+
+    @JsonIgnore
+    @OneToMany(mappedBy ="chat" ,cascade = CascadeType.ALL,orphanRemoval = true)
+    private List<Message> messages;
+    
+
+    // Users participating in the chat
+    @ManyToMany
+    @JoinTable(
+            name = "chat_users",
+            joinColumns = @JoinColumn(name = "chat_id"),
+            inverseJoinColumns = @JoinColumn(name = "user_id")
+    )
+    private List<User> users=new ArrayList<User>();
+
+}
+
+
+package com.project.model;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
+import jakarta.persistence.CascadeType;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
+import jakarta.persistence.Table;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.hibernate.annotations.ManyToAny;
+
+@Entity
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class Project {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+    
+    private String description;
+    
+    private String category;
+    
+    private List<String> tags = new ArrayList<>();
+   
+    @JsonIgnore
+    @OneToOne(mappedBy = "project", cascade = CascadeType.ALL,orphanRemoval = true)
+    private Chat chat;
+
+    @ManyToOne
+    private User owner;
+
+    @JsonIgnore
+    @OneToMany(mappedBy = "project", cascade = CascadeType.ALL,orphanRemoval = true)
+    private List<Issue> issues = new ArrayList<>();
+
+
+    @ManyToMany
+    private List<User> team = new ArrayList<>();
+
+
+}
+
+
+service-package com.project.service;
+
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Optional;
+import java.util.UUID;
+
+import com.project.exception.ProjectException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import com.project.config.JwtProvider;
+import com.project.exception.UserException;
+import com.project.model.PasswordResetToken;
+import com.project.model.User;
+
+import com.project.repository.UserRepository;
+
+@Service
+public class UserServiceImplementation implements UserService {
+	@Autowired
+	private UserRepository userRepository;
+
+	@Autowired
+	private PasswordEncoder passwordEncoder;
+	@Autowired
+	private JavaMailSender javaMailSender;
+
+//	@Autowired
+//	private ProjectService projectService;
+
+	@Override
+	public User findUserProfileByJwt(String jwt) throws UserException, ProjectException {
+		String email = JwtProvider.getEmailFromJwtToken(jwt);
+
+		User user = userRepository.findByEmail(email);
+
+//		int projectSize=projectService.getProjectsByTeam(user,null,null).size();
+//		user.setProjectSize(projectSize);
+
+		userRepository.save(user);
+
+		if (user == null) {
+			throw new UserException("user not exist with email " + email);
+		}
+		return user;
+	}
+
+	@Override
+	public User findUserByEmail(String username) throws UserException {
+
+		User user = userRepository.findByEmail(username);
+
+		if (user != null) {
+
+			return user;
+		}
+
+		throw new UserException("user not exist with username " + username);
+	}
+
+	@Override
+	public User findUserById(Long userId) throws UserException {
+		Optional<User> opt = userRepository.findById(userId);
+
+		if (opt.isEmpty()) {
+			throw new UserException("user not found with id " + userId);
+		}
+		return opt.get();
+	}
+
+	@Override
+	public User updateUsersProjectSize(User user, int number) {
+		user.setProjectSize(user.getProjectSize()+number);
+		if(user.getProjectSize()==-1){
+			return user;
+		}
+		return userRepository.save(user);
+	}
+
+	@Override
+	public void updatePassword(User user, String newPassword) {
+		user.setPassword(passwordEncoder.encode(newPassword));
+		userRepository.save(user);
+	}
+
+
+
+	private void sendEmail(String to, String subject, String message) {
+		SimpleMailMessage mailMessage = new SimpleMailMessage();
+
+		mailMessage.setTo(to);
+		mailMessage.setSubject(subject);
+		mailMessage.setText(message);
+
+		javaMailSender.send(mailMessage);
+	}
+
+	private String generateRandomToken() {
+		return UUID.randomUUID().toString();
+	}
+
+	private Date calculateExpiryDate() {
+		Calendar cal = Calendar.getInstance();
+		cal.setTime(new Date());
+		cal.add(Calendar.MINUTE, 10);
+		return cal.getTime();
+	}
+
+}
+
+package com.project.service;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.project.exception.ChatException;
+import com.project.exception.ProjectException;
+import com.project.exception.UserException;
+import com.project.model.Chat;
+import com.project.model.Project;
+import com.project.model.User;
+import com.project.repository.ProjectRepository;
+
+import jakarta.transaction.Transactional;
+
+@Service
+public class ProjectServiceImpl implements ProjectService {
+
+	 @Autowired
+	 private ProjectRepository projectRepository;
+
+	 @Autowired
+	 private ChatService chatService;
+	 @Autowired
+	 private InvitationService inviteTokenService;
+	 
+	 @Autowired 
+	 private UserService userService;
+
+	@Override
+	public Project createProject(Project project,Long id) throws UserException  {
+		User user = userService.findUserById(id);
+		Project createdProject=new Project();
+
+			createdProject.setOwner(user);
+			createdProject.setTags(project.getTags());
+			createdProject.setName(project.getName());
+			createdProject.setCategory(project.getCategory());
+			createdProject.setDescription(project.getDescription());
+			createdProject.getTeam().add(user);
+
+			System.out.println(createdProject);
+			Project savedProject=projectRepository.save(project);
+
+
+
+			Chat chat = new Chat();
+			chat.setProject(savedProject);
+			Chat projectChat = chatService.createChat(chat);
+			savedProject.setChat(projectChat);
+
+
+
+		return savedProject;
+	}
+
+	@Override
+	public List<Project> getProjectsByTeam(User user,String category,String tag) throws ProjectException {
+		List<Project> projects= projectRepository.findByTeamContainingOrOwner(user,user);
+
+		if (category != null) {
+			projects = projects.stream()
+					.filter(project -> project.getCategory().equals(category))
+					.collect(Collectors.toList());
+		}
+
+		if (tag != null) {
+			projects = projects.stream()
+					.filter(project -> project.getTags().contains(tag))
+					.collect(Collectors.toList());
+		}
+
+		return projects;
+	}
+
+
+
+	@Override
+	public Project getProjectById(Long projectId) throws ProjectException {
+		Optional<Project> project = projectRepository.findById(projectId);
+		if(project.isPresent()) {
+			return project.get();
+		}
+		throw new ProjectException("No project exists with the id "+projectId);
+	}
+
+	@Override
+	public String deleteProject(Long projectId,Long id) throws UserException {
+		User user = userService.findUserById(id);
+		System.out.println("user ____>"+user);
+		if(user!=null) {
+			  projectRepository.deleteById(projectId);
+			  return "project deleted";
+	}
+		throw new UserException("User doesnot exists");
+	}
+
+	@Override
+	public Project updateProject(Project updatedProject, Long id) throws ProjectException {
+		Project project = getProjectById(id);
+
+		if (project != null) {
+			// Update the existing project with the fields from updatedProject
+			if (updatedProject.getName() != null) {
+				project.setName(updatedProject.getName());
+			}
+
+			if (updatedProject.getDescription() != null) {
+				project.setDescription(updatedProject.getDescription());
+			}
+
+			if (updatedProject.getTags() != null) {
+				project.setTags(updatedProject.getTags());
+			}
+
+			// Save the updated project once
+			return projectRepository.save(project);
+		}
+
+		throw new ProjectException("Project does not exist");
+	}
+	@Override
+	public List<Project> searchProjects(String keyword, User user) throws ProjectException {
+		if (keyword == null || keyword.trim().isEmpty()) {
+			throw new ProjectException("Search keyword cannot be empty");
+		}
+
+		List<Project> list = projectRepository.findByNameContainingIgnoreCase(keyword);
+		if (list.isEmpty()) {
+			throw new ProjectException("No Projects found matching: " + keyword);
+		}
+		return list;
+	}
+	    
+	    @Override
+	    @Transactional
+	    public void addUserToProject(Long projectId, Long userId) throws UserException, ProjectException {
+	        Project project = projectRepository.findById(projectId).orElseThrow(() -> new ProjectException("project not found"));
+	        User user = userService.findUserById(userId);
+
+	        if (!project.getTeam().contains(user)) {
+				project.getChat().getUsers().add(user);
+				project.getTeam().add(user);
+				projectRepository.save(project);
+			}
+
+
+	    }
+
+	@Override
+	public void removeUserFromProject(Long projectId, Long userId) throws UserException, ProjectException {
+		Project project = projectRepository.findById(projectId)
+				.orElseThrow(() -> new ProjectException("project not found"));
+		User user = userService.findUserById(userId);
+
+		if (project.getTeam().contains(user)) {
+			project.getTeam().remove(user);
+			project.getChat().getUsers().remove(user);
+		}
+
+	}
+
+	@Override
+	    public Chat getChatByProjectId(Long projectId) throws ProjectException, ChatException {
+	        Project project = projectRepository.findById(projectId).orElseThrow(()-> new ProjectException("Project not found"));
+	        if( project != null ) return project.getChat() ;
+	        
+	        
+			throw new ChatException("no chats found");
+	       
+	    }
+
+	    public List<User> getUsersByProjectId(Long projectId) throws ProjectException {
+	        Project project = projectRepository.findById(projectId).orElse(null);
+	        if( project != null) return project.getChat().getUsers();
+	        
+	        throw new ProjectException("no project found with id "+projectId);
+	    }
+	
+	    
+	    
+}
+\documentclass[a4paper,11pt]{article}
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{anyfontsize}
+\input{glyphtounicode}
+
+% Global font scaling for proper sizes
+\renewcommand{\normalsize}{\fontsize{11}{13.5}\selectfont}
+\renewcommand{\small}{\fontsize{10}{12}\selectfont}
+\renewcommand{\Large}{\fontsize{12}{14.4}\selectfont}
+\renewcommand{\LARGE}{\fontsize{15}{18}\selectfont}
+
+% Adjust margins for A4 size
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-0.5in}
+\addtolength{\textheight}{1.25in}
+
+% Section title format
+\titleformat{\section}{
+  \vspace{-5pt}\scshape\raggedright\Large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+% New commands for structured content
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{0pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{0pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-2pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-2pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{@{\extracolsep{\fill}}l r}
+      \small#1 & \small#2 \\
+    \end{tabular*}\vspace{-2pt}
+}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, itemsep=2pt]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[itemsep=2pt]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-2pt}}
+
+% Add a bit more word spacing
+\spaceskip=1.075\fontdimen2\font plus 1.0\fontdimen3\font minus 1.0\fontdimen4\font
+
+\begin{document}
+
+% Header
+\begin{center}
+    \textbf{\LARGE \scshape Agush Sikarwar} \\ \vspace{1pt}
+    \small +91-7906157933 $|$ \href{mailto:agushsikarwar202021@gmail.com}{agushsikarwar202021@gmail.com} $|$ 
+    \href{https://github.com/Agush12}{GitHub} $|$
+    \href{https://www.linkedin.com/in/agush-sikarwar-70a818252/}{LinkedIn}
+\end{center}
+
+% Education Section
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {VIT University Bhopal}{2021 -- 2025}
+      {Bachelor of Technology in CSE (Specialization in Gaming Technology)}{\textbf{CGPA: 9.00/10}}
+    \resumeSubheading
+      {SIMPKINS SCHOOL, Agra}{March 2020}
+      {Higher Secondary, CBSE}{\textbf{Percentage: 90.8\%}}
+    \resumeSubheading
+      {SIMPKINS SCHOOL, Agra}{March 2018}
+      {Secondary, CBSE}{\textbf{Percentage: 95.2\%}}
+  \resumeSubHeadingListEnd
+
+% Technical Skills Section
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}, itemsep=1pt] % Reduced spacing between items
+    \small{\item{
+     \textbf{Languages}{: Java, SQL, HTML, CSS, JavaScript} \\
+     \textbf{Frameworks}{: Spring, Spring Boot, SpringMVC, Hibernate/JPA, Spring Security, RESTful API, Mockito, JUnit, JDBC, Git, GitHub, Aspect Oriented Programming, MySQL, Blender 3D, Unity3D Engine, JSP} \\
+     \textbf{Academic Coursework}{: Database Management System, Object-Oriented Programming, Operating System, Computer Networks, Data Structures and Algorithms} \\
+     }}
+ \end{itemize}
+
+% Reduced vertical space before Projects Section
+\vspace{-12pt}
+
+% Projects Section
+\section{Projects}
+  \resumeSubHeadingListStart
+    \resumeProjectHeading
+      {\textbf{Coordi-Hub} $|$ \emph{Spring Boot, Spring Security, JPA/Hibernate, MySQL, WebSocket, RazorPay}}{(February 2024)}
+      \resumeItemListStart
+        \resumeItem{Designed and implemented robust RESTful API for seamless collaboration, project management, and progress tracking.}
+       
+         \resumeItem{Implemented real-time chat functionality using WebSocket, achieving a 95\% reduction in latency, ensuring fully duplex and efficient communication for users.}
+        \resumeItem{Implemented JWT-based authentication with custom filter chains and configured CORS for secure cross-origin communication.}
+        \resumeItem{Utilized Spring Mail to automate team invitations, tested successfully with 15+ user teams, enhancing collaboration.}
+        \resumeItem{Reduced boilerplate code by 70\% with Lombok, improved readability, and optimized JPA/Hibernate for 10+ entities with complex mappings, ensuring robust error handling for 10+ exceptions using Centralized exception Handling}
+      \resumeItemListEnd
+    \resumeProjectHeading
+      {\textbf{HireHive} $|$ \emph{Spring Boot, SwaggerUI, Spring Security, JPA/Hibernate, MySQL, RazorPay}}{(December 2023)}
+      \resumeItemListStart
+        \resumeItem{Developed a RESTful API to connect clients with skilled and unskilled workers, improving job accessibility and promoting an inclusive labor market using Spring Boot, JWT, and MySQL.}
+        \resumeItem{Deployed Swagger UI for detailed and user-friendly API documentation, enabling seamless integration for developers.}
+        \resumeItem{Optimized data handling with 15 DTOs for efficient data transfer and security by ensuring only relevant information is processed.}
+        \resumeItem{Integrated Razorpay for secure, scalable payment processing, with over 100 successful transactions.}
+      \resumeItemListEnd
+    \resumeProjectHeading
+      {\textbf{MultiThreadTalk} $|$ \emph{Java, Socket Programming, Multithreading, Java Swing}}{(September 2023)}
+      \resumeItemListStart
+        \resumeItem{Engineered a multithreaded Java chatting application, supporting real-time group communication for over 50 users.}
+        \resumeItem{Enhanced communication efficiency and responsiveness by integrating socket programming and multithreading techniques.}
+        \resumeItem{Executed stress testing with 10+ concurrent users, achieving significant latency reduction.}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+% Additional Information Section
+\vspace{-5pt}
+\section{Additional Information}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    {\fontsize{10}{11}\selectfont \item{
+     \textbf{Leadership}{: Spearheaded initiatives as a core team member of the GeeksforGeeks club at VIT Bhopal, driving collaboration and knowledge sharing.} \\
+     \textbf{Academic Excellence}{: Awarded 25\% GVDSP Scholarship for outstanding performance.} \\
+     \textbf{Competitive Coding}{: Ranked in the top 10\% on LeetCode and GeeksforGeeks, solving over 500 problems, showcasing problem-solving expertise.} \\
+     \textbf{Olympiads}{: Secured a Zonal rank in both the International Mathematics Olympiad (IMO) and National Science Olympiad (NSO).} \\
+     \textbf{Early Success}{: Received recommendations for NDA 145 and NDA 146 from AFSB Dehradun and SSB Allahabad.} \\
+     \textbf{Hackathon}{: Achieved 3rd place in the Bugoff hackathon, competing among 200+ participants and showcasing superior coding skills.}
+    }}
+ \end{itemize}
+
+\end{document}
